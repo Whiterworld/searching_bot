@@ -1,0 +1,5 @@
+Flask==3.0.3
+Flask-Cors==4.0.1
+pdf2docx==0.5.3
+docx2pdf==0.1.8
+werkzeug==3.0.3
