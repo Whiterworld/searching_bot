@@ -10,7 +10,6 @@ from PIL import Image
 
 UPLOAD_DIR = Path("/tmp/uploads")
 OUTPUT_DIR = Path("/tmp/outputs")
-
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -19,10 +18,9 @@ ALLOWED_DOCX = {"docx"}
 ALLOWED_IMAGES = {"png", "jpg", "jpeg", "bmp", "tiff", "webp"}
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": ["https://ptwtp.netlify.app/"]}}) 
+CORS(app, resources={r"/*": {"origins": "https://ptwtp.netlify.app"}})  # Allow all for testing
 
 
-# ---------- Utility ----------
 def save_upload(file_storage, subdir):
     filename = secure_filename(file_storage.filename)
     ext = filename.rsplit(".", 1)[-1].lower()
@@ -40,13 +38,11 @@ def make_download_response(filepath: Path, download_name: str, mimetype: str):
     return response
 
 
-# ---------- Routes ----------
 @app.route("/")
 def index():
-    return {"message": "File Converter Backend Running"}
+    return {"message": "✅ Flask File Converter Running"}
 
 
-# ---- PDF → DOCX ----
 @app.route("/convert/pdf-to-docx", methods=["POST"])
 def pdf_to_docx():
     file = request.files.get("file")
@@ -65,14 +61,10 @@ def pdf_to_docx():
     except Exception as e:
         return jsonify({"error": f"Conversion failed: {e}"}), 500
 
-    return make_download_response(
-        output,
-        download_name=f"{Path(file.filename).stem}.docx",
-        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    )
+    return make_download_response(output, f"{Path(file.filename).stem}.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
 
-# ---- DOCX → PDF ----
 @app.route("/convert/docx-to-pdf", methods=["POST"])
 def docx_to_pdf():
     file = request.files.get("file")
@@ -85,30 +77,26 @@ def docx_to_pdf():
 
     out_dir = OUTPUT_DIR / "docx_to_pdf"
     out_dir.mkdir(parents=True, exist_ok=True)
+    output = out_dir / f"{saved.stem}.pdf"
 
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", str(out_dir), str(saved)],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=60
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60, check=True
         )
+        print(result.stdout.decode(), result.stderr.decode())
+    except subprocess.CalledProcessError as e:
+        print("LibreOffice Error:", e.stderr.decode())
+        return jsonify({"error": f"Conversion failed. LibreOffice issue: {e}"}), 500
     except Exception as e:
         return jsonify({"error": f"Conversion failed: {e}"}), 500
 
-    output = out_dir / f"{saved.stem}.pdf"
     if not output.exists():
         return jsonify({"error": "Conversion failed: no output PDF created"}), 500
 
-    return make_download_response(
-        output,
-        download_name=f"{Path(file.filename).stem}.pdf",
-        mimetype="application/pdf"
-    )
+    return make_download_response(output, f"{Path(file.filename).stem}.pdf", "application/pdf")
 
 
-# ---- IMAGES → PDF ----
 @app.route("/convert/images-to-pdf", methods=["POST"])
 def images_to_pdf():
     files = request.files.getlist("files")
@@ -135,11 +123,7 @@ def images_to_pdf():
             except Exception:
                 pass
 
-    return make_download_response(
-        out_pdf,
-        download_name="images_converted.pdf",
-        mimetype="application/pdf"
-    )
+    return make_download_response(out_pdf, "images_converted.pdf", "application/pdf")
 
 
 @app.route("/health")
@@ -148,4 +132,4 @@ def health():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
