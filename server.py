@@ -1,160 +1,154 @@
-from flask import Flask, request, send_file, jsonify
-from flask_cors import CORS
-from pdf2docx import Converter
-from docx import Document
-from fpdf import FPDF
-from pymongo import MongoClient
-from PIL import Image
-import tempfile
 import os
-import io
-from datetime import datetime, timezone
-import logging
+import uuid
+import subprocess
+from pathlib import Path
+from flask import Flask, request, redirect, url_for, flash, render_template, send_file, make_response
+from flask_cors import CORS
+from werkzeug.utils import secure_filename
+from pdf2docx import Converter
+from PIL import Image
+
+# Setup paths
+UPLOAD_DIR = Path("/tmp/uploads")
+OUTPUT_DIR = Path("/tmp/outputs")
+
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+ALLOWED_PDF = {"pdf"}
+ALLOWED_DOCX = {"docx"}
+ALLOWED_IMAGES = {"png", "jpg", "jpeg", "bmp", "tiff", "webp"}
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": ["https://ptwtp.netlify.app/"]}})
 
-# ----------------- Configuration -----------------
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
+# ---------- Utility ----------
 
-# ----------------- MongoDB Setup -----------------
-MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://admin:admin123@cluster0.uhfubqa.mongodb.net/Whiter")
-client = MongoClient(MONGO_URI)
-db = client["pdf_converter"]
-logs = db["conversion_logs"]
+def save_upload(file_storage, subdir):
+    """Save an uploaded file with a unique name."""
+    filename = secure_filename(file_storage.filename)
+    ext = filename.rsplit(".", 1)[-1].lower()
+    out_dir = UPLOAD_DIR / subdir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    saved_path = out_dir / f"{uuid.uuid4().hex}_{filename}"
+    file_storage.save(saved_path)
+    return saved_path, ext
 
-# ----------------- PDF → Word -----------------
-@app.route('/pdf-to-word', methods=['POST'])
-def pdf_to_word():
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'}), 400
-    pdf_file = request.files['file']
-    if pdf_file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
+def make_download_response(filepath: Path, download_name: str, mimetype: str):
+    """Force correct file name and type in download response."""
+    response = make_response(send_file(filepath, as_attachment=True))
+    response.headers["Content-Type"] = mimetype
+    response.headers["Content-Disposition"] = f'attachment; filename="{download_name}"'
+    return response
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        input_pdf = os.path.join(tmpdir, 'input.pdf')
-        output_docx = os.path.join(tmpdir, 'output.docx')
-        pdf_file.save(input_pdf)
+# ---------- Routes ----------
 
-        try:
-            cv = Converter(input_pdf)
-            cv.convert(output_docx)
-            cv.close()
-        except Exception as e:
-            return jsonify({'error': f'PDF → Word conversion failed: {str(e)}'}), 500
+@app.route("/")
+def index():
+    return render_template("index.html")
 
-        with open(output_docx, "rb") as f:
-            docx_data = f.read()
+# ---- PDF → DOCX ----
+@app.route("/convert/pdf-to-docx", methods=["POST"])
+def pdf_to_docx():
+    file = request.files.get("file")
+    if not file:
+        flash("No file uploaded")
+        return redirect(url_for("index"))
+    saved, ext = save_upload(file, "pdf_to_docx")
+    if ext not in ALLOWED_PDF:
+        flash("Only PDF files allowed")
+        return redirect(url_for("index"))
 
-        try:
-            logs.insert_one({
-                "type": "pdf_to_word",
-                "filename": pdf_file.filename,
-                "timestamp": datetime.now(timezone.utc)
-            })
-        except Exception as e:
-            print(f"Failed to log: {e}")
+    output = OUTPUT_DIR / f"{Path(file.filename).stem}.docx"
+    try:
+        cv = Converter(str(saved))
+        cv.convert(str(output))
+        cv.close()
+    except Exception as e:
+        flash(f"Conversion failed: {e}")
+        return redirect(url_for("index"))
 
-        return send_file(
-            io.BytesIO(docx_data),
-            as_attachment=True,
-            download_name="converted.docx",
-            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    return make_download_response(
+        output,
+        download_name=f"{Path(file.filename).stem}.docx",
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+
+# ---- DOCX → PDF ----
+@app.route("/convert/docx-to-pdf", methods=["POST"])
+def docx_to_pdf():
+    file = request.files.get("file")
+    if not file:
+        flash("No file uploaded")
+        return redirect(url_for("index"))
+    saved, ext = save_upload(file, "docx_to_pdf")
+    if ext not in ALLOWED_DOCX:
+        flash("Only DOCX files allowed")
+        return redirect(url_for("index"))
+
+    out_dir = OUTPUT_DIR / "docx_to_pdf"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            ["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", str(out_dir), str(saved)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60
         )
+    except Exception as e:
+        flash(f"Conversion failed: {e}")
+        return redirect(url_for("index"))
 
-# ----------------- Word → PDF -----------------
-@app.route('/word-to-pdf', methods=['POST'])
-def word_to_pdf():
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'}), 400
-    word_file = request.files['file']
-    if word_file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
+    output = out_dir / f"{saved.stem}.pdf"
+    if not output.exists():
+        flash("Conversion failed: no output PDF created")
+        return redirect(url_for("index"))
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        input_docx = os.path.join(tmpdir, 'input.docx')
-        output_pdf = os.path.join(tmpdir, 'output.pdf')
-        word_file.save(input_docx)
+    return make_download_response(
+        output,
+        download_name=f"{Path(file.filename).stem}.pdf",
+        mimetype="application/pdf"
+    )
 
-        try:
-            doc = Document(input_docx)
-            pdf = FPDF()
-            pdf.set_auto_page_break(auto=True, margin=15)
-            pdf.add_page()
-            pdf.set_font("Arial", size=12)
-            for para in doc.paragraphs:
-                pdf.multi_cell(0, 10, para.text)
-            pdf.output(output_pdf)
-        except Exception as e:
-            return jsonify({'error': f'Word → PDF conversion failed: {str(e)}'}), 500
+# ---- IMAGES → PDF ----
+@app.route("/convert/images-to-pdf", methods=["POST"])
+def images_to_pdf():
+    files = request.files.getlist("files")
+    if not files:
+        flash("No images uploaded")
+        return redirect(url_for("index"))
 
-        with open(output_pdf, "rb") as f:
-            pdf_data = f.read()
+    images = []
+    try:
+        for f in files:
+            saved, ext = save_upload(f, "images_to_pdf")
+            if ext not in ALLOWED_IMAGES:
+                raise ValueError(f"Unsupported image: {f.filename}")
+            img = Image.open(saved).convert("RGB")
+            images.append(img)
 
-        try:
-            logs.insert_one({
-                "type": "word_to_pdf",
-                "filename": word_file.filename,
-                "timestamp": datetime.now(timezone.utc)
-            })
-        except Exception as e:
-            print(f"Failed to log: {e}")
+        out_pdf = OUTPUT_DIR / f"{uuid.uuid4().hex}_images.pdf"
+        images[0].save(out_pdf, save_all=True, append_images=images[1:])
+    except Exception as e:
+        flash(f"Images → PDF failed: {e}")
+        return redirect(url_for("index"))
+    finally:
+        for im in images:
+            try:
+                im.close()
+            except Exception:
+                pass
 
-        return send_file(
-            io.BytesIO(pdf_data),
-            as_attachment=True,
-            download_name="converted.pdf",
-            mimetype="application/pdf"
-        )
+    return make_download_response(
+        out_pdf,
+        download_name="images_converted.pdf",
+        mimetype="application/pdf"
+    )
 
-# ----------------- Image → PDF -----------------
-@app.route('/image-to-pdf', methods=['POST'])
-def image_to_pdf():
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'}), 400
-    img_file = request.files['file']
-    if img_file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
+@app.route("/health")
+def health():
+    return {"status": "ok"}
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        ext = os.path.splitext(img_file.filename)[1]
-        input_img = os.path.join(tmpdir, f'input_image{ext}')
-        output_pdf = os.path.join(tmpdir, 'output.pdf')
-        img_file.save(input_img)
-
-        try:
-            with Image.open(input_img) as img:
-                if img.mode in ("RGBA", "P", "LA"):
-                    img = img.convert("RGB")
-                img.save(output_pdf, "PDF", resolution=100.0)
-        except Exception as e:
-            return jsonify({'error': f'Image → PDF conversion failed: {str(e)}'}), 500
-
-        with open(output_pdf, "rb") as f:
-            pdf_data = f.read()
-
-        try:
-            logs.insert_one({
-                "type": "image_to_pdf",
-                "filename": img_file.filename,
-                "timestamp": datetime.now(timezone.utc)
-            })
-        except Exception as e:
-            print(f"Failed to log: {e}")
-
-        return send_file(
-            io.BytesIO(pdf_data),
-            as_attachment=True,
-            download_name="converted.pdf",
-            mimetype="application/pdf"
-        )
-
-# ----------------- Health Check -----------------
-@app.route('/')
-def home():
-    return jsonify({"message": "Flask API is running"})
-
-# ----------------- Run Server -----------------
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", debug=False)
