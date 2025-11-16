@@ -109,19 +109,30 @@ def summarize_to_ai_style(snippets, query, max_sentences=12):
     return summary
 
 # -------------------- ROUTE --------------------
-@app.route("/ask", methods=["POST"])
+@app.route("/ask", methods=["POST", "OPTIONS"])
 def ask():
+    # Handle OPTIONS request (preflight)
+    if request.method == "OPTIONS":
+        response = jsonify({"status": "ok"})
+        response.headers.add("Access-Control-Allow-Origin", "https://searchbywhiter.netlify.app")
+        response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+        response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
+        return response
+
+    # Handle POST request
     user_message = request.form.get("message", "").strip()
     if not user_message:
-        return jsonify({"response": "Please enter a question."})
+        response = jsonify({"response": "Please enter a question."})
+        response.headers.add("Access-Control-Allow-Origin", "https://searchbywhiter.netlify.app")
+        return response
 
     snippets = search_google(user_message)
-    
-    # Debug: see what snippets are returned
     print("DEBUG: snippets:", snippets)
-
     ai_response = summarize_to_ai_style(snippets, user_message)
-    return jsonify({"response": ai_response})
+
+    response = jsonify({"response": ai_response})
+    response.headers.add("Access-Control-Allow-Origin", "https://searchbywhiter.netlify.app")
+    return response
 
 # -------------------- RUN SERVER --------------------
 if __name__ == "__main__":
