@@ -12,9 +12,9 @@ def search_google(query, max_results=5):
     """
     Fetch search results from Google Custom Search API and return text snippets.
     """
-    API_KEY = "AIzaSyCiyONO2j5eD2wUw80R14hkJGINX5WDvt0"         # Replace with your Google API key
-    CX = "e5fdbcffd54ff47d3"     # Replace with your Custom Search Engine ID
-    url = "https://www.googleapis.com/customsearch/v1"
+    API_KEY = ""         # Replace with your Google API key
+    CX = ""     # Replace with your Custom Search Engine ID
+    url = ""    #Replace with your Custom Search Engine url
 
     params = {
         "key": API_KEY,
